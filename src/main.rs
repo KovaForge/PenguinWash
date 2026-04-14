@@ -6,7 +6,9 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use penguinwash_lib::config::{load_config, save_config};
-use penguinwash_lib::{run_scan, Config, ScanResult};
+use penguinwash_lib::{
+    run_large_file_scan, run_scan, Config, ScanResult,
+};
 
 #[derive(Parser)]
 #[command(
@@ -57,6 +59,15 @@ enum Commands {
     ShowConfig,
     /// Reset configuration to defaults
     ResetConfig,
+    /// Scan for large files (for remote diagnosis)
+    LargeFiles {
+        /// Minimum file size in MB (default: 100)
+        #[arg(short, long, default_value = "100")]
+        min_mb: u64,
+        /// Paths to scan (default: /)
+        #[arg(short, long, num_args = 1..)]
+        paths: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -93,7 +104,7 @@ fn main() -> Result<()> {
     let _guard = rt.enter();
 
     match &cli.command {
-        Some(Commands::Scan { categories }) => {
+        Some(Commands::Scan { categories: _ }) => {
             info!("Starting scan...");
             let result = rt.block_on(run_scan(&config))?;
             if cli.json {
@@ -115,6 +126,25 @@ fn main() -> Result<()> {
             let default = Config::default();
             save_config(&default)?;
             println!("Config reset to defaults.");
+        }
+        Some(Commands::LargeFiles { min_mb, paths }) => {
+            info!("Scanning for files larger than {} MB...", min_mb);
+            let scan_paths: Vec<std::path::PathBuf> = if paths.is_empty() {
+                vec![std::path::PathBuf::from("/")]
+            } else {
+                paths.iter().map(|p| std::path::PathBuf::from(p)).collect()
+            };
+            let files = rt.block_on(run_large_file_scan(scan_paths, *min_mb))?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&files)?);
+            } else {
+                println!("\n{:>12}  {}", "Size", "Path");
+                println!("{}", "-".repeat(80));
+                for f in &files {
+                    println!("{:>12}  {}", f.size_formatted(), f.path);
+                }
+                println!("\n{} files found", files.len());
+            }
         }
         None => {
             info!("PenguinWash v0.1.0 — Linux system cleaner");

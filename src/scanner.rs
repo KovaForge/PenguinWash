@@ -3,10 +3,10 @@
 //! Uses async parallel traversal for performance.
 
 use crate::categories::{self, Category};
-use crate::Config;
 use crate::CleanableItem;
+use crate::Config;
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::fs;
 use walkdir::WalkDir;
@@ -123,4 +123,54 @@ pub fn is_old_file(path: &Path, threshold_days: u64) -> Result<bool> {
 pub fn is_large_file(path: &Path, threshold_mb: u64) -> Result<bool> {
     let meta = std::fs::metadata(path)?;
     Ok(meta.len() >= threshold_mb * 1024 * 1024)
+}
+
+// ─── Large file scanner (for remote diagnosis) ─────────────────────────────────
+
+use crate::LargeFileEntry;
+
+/// Scan for large files starting from `root`, exceeding `threshold_mb`.
+/// Returns sorted by size, largest first.
+pub async fn scan_large_files(root: &Path, threshold_mb: u64) -> Result<Vec<LargeFileEntry>> {
+    let root = root.to_path_buf();
+    let threshold = threshold_mb * 1024 * 1024;
+
+    let entries = tokio::task::spawn_blocking(move || {
+        WalkDir::new(&root)
+            .follow_links(false)
+            .max_depth(20)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter_map(|e| {
+                let meta = e.metadata().ok()?;
+                if meta.len() < threshold {
+                    return None;
+                }
+                let modified = meta.modified().ok();
+                let accessed = meta.accessed().ok();
+                Some(LargeFileEntry {
+                    path: e.path().display().to_string(),
+                    size_bytes: meta.len(),
+                    modified,
+                    accessed,
+                })
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .context("large file scan panicked")?;
+
+    // Sort by size descending
+    let mut entries = entries;
+    entries.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+
+    Ok(entries)
+}
+
+/// Default paths to scan for large files
+pub fn default_large_file_paths() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/"),
+    ]
 }

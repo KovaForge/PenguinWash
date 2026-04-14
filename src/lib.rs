@@ -11,6 +11,7 @@ pub mod gui;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// Represents a single file or directory to be cleaned
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +80,21 @@ impl Default for Config {
     }
 }
 
+/// A large file entry for remote diagnostics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LargeFileEntry {
+    pub path: String,
+    pub size_bytes: u64,
+    pub modified: Option<SystemTime>,
+    pub accessed: Option<SystemTime>,
+}
+
+impl LargeFileEntry {
+    pub fn size_formatted(&self) -> String {
+        humanize_bytes(self.size_bytes)
+    }
+}
+
 /// Human-readable byte size
 pub fn humanize_bytes(bytes: u64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB"];
@@ -111,4 +127,23 @@ pub async fn run_scan(config: &Config) -> Result<ScanResult> {
         grand_total_size,
         scan_duration_ms: elapsed,
     })
+}
+
+/// Scan for large files on a remote machine
+pub async fn run_large_file_scan(paths: Vec<PathBuf>, threshold_mb: u64) -> Result<Vec<LargeFileEntry>> {
+    let mut all_files = Vec::new();
+
+    for root in paths {
+        if !root.exists() {
+            tracing::warn!("Path does not exist, skipping: {}", root.display());
+            continue;
+        }
+        let files = scanner::scan_large_files(&root, threshold_mb).await?;
+        all_files.extend(files);
+    }
+
+    // Sort all by size descending
+    all_files.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+
+    Ok(all_files)
 }
