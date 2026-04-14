@@ -2,109 +2,98 @@
 
 ## 1. Concept & Goal
 
-**PenguinWash** is a free, open-source Linux system cleaner — the PureMac equivalent for Linux. It scans and safely removes:
-- System caches and logs
-- User application caches (browser, npm, pip, etc.)
-- Package manager caches (apt, dnf, yum, pacman, snap, flatpak)
-- Old journal logs
-- Trash bins
-- Large and old files
-- Orphaned flatpak/snap packages
+**PenguinWash** is a free, open-source Linux system cleaner — the PureMac equivalent for Linux, inspired by BleachBit. It scans and safely removes junk to reclaim disk space.
 
-No telemetry. No subscriptions. Runs entirely offline. Native Linux toolchain.
+No telemetry. No subscriptions. Runs entirely offline. Native Linux GUI.
 
 ---
 
-## 2. Linux Port Mapping (PureMac → Linux)
+## 2. Linux-Specific Disk Bloat Areas (Research-Informed)
 
-| PureMac Category | Linux Equivalent | Paths |
-|---|---|---|
-| System Junk | System caches/logs | `/var/cache`, `/var/log`, `/tmp`, `~/.cache` |
-| User Cache | User caches | `~/.cache` (browsers, npm, pip, yarn, pnpm) |
-| Mail Attachments | Mail downloads | `~/.local/share/mail-downloads` (Thunderbird, etc.) |
-| Trash | Trash | `~/.local/share/Trash` |
-| Large & Old Files | Downloads/Documents | `~/Downloads`, `~/Documents`, `~/Desktop` |
-| Xcode Junk | Dev caches | `~/.cache/pip`, `~/.npm`, `~/.cargo`, `~/.texlive` |
-| Homebrew Cache | Package manager caches | apt (`/var/cache/apt`), dnf (`/var/cache/dnf`), pacman (`/var/cache/pacman`), snap (`/var/snap`), flatpak (`/var/lib/flatpak`) |
-| Purgeable Space | Journal + old logs | `journalctl --vacuum` |
-| — | Orphan packages | flatpak, snap orphans |
+### Highest-Impact Bloat Categories
+
+| Category | Path(s) | Typical Size | Auto-Cleanable |
+|---|---|---|---|
+| **Snap revisions** | `/var/lib/snapd/snaps` | 1–10 GB | Yes — disabled/old revisions only |
+| **Flatpak orphans** | `/var/lib/flatpak`, `~/.local/share/flatpak` | 500 MB–5 GB | Yes — unused runtimes |
+| **Journal logs** | `/var/log/journal/` | 100 MB–15 GB | Partial — older than 90 days |
+| **Docker images** | `/var/lib/docker` | 1–20 GB | Yes — unused images + volumes |
+| **Old kernels** | `/boot` | 200–800 MB | Partial — old versions only |
+| **Thumbnails** | `~/.cache/thumbnails` | 50 MB–2 GB | Yes |
+| **User caches** | `~/.cache` (browsers, pip, npm, conda, go) | 100 MB–10 GB | Yes |
+| **Package manager caches** | apt `/var/cache/apt`, dnf `/var/cache/dnf`, pacman `/var/cache/pacman` | 500 MB–5 GB | Yes |
+| **Trash** | `~/.local/share/Trash` | varies | Yes |
+| **System logs** | `/var/log/*.log` (kern.log, ufw.log) | 100 MB–20 GB | Partial — rotated logs older than N days |
+| **Flatpak user install** | `~/.local/share/flatpak` | varies | Partial — unused apps |
+
+### Rare but Massive Bloat
+- `/var/log/` alone: users report 40GB+ in single log files (kern.log, ufw.log)
+- Snap disabled revisions: forum post shows `/var/lib/snapd/snaps` growing from 2.8GB → 6.2GB in 2 years
+- Flatpak unused runtimes accumulate after app updates
 
 ---
 
 ## 3. Tech Stack
 
-- **Language:** Rust (safe, fast, cross-Linux-distro)
-- **Frontend:** CLI with `--scan`, `--clean`, `--interactive`
-- **Optional TUI:** `ratatui` for a curses-based UI (future)
-- **Package managers supported:** apt (Debian/Ubuntu), dnf/yum (Fedora/RHEL), pacman (Arch), zypper (openSUSE), snap, flatpak
-- **Build:** `cargo build --release`
-- **Target:** x86_64 Linux (glibc-based)
+- **Language:** Rust
+- **GUI:** GTK4 + libadwaita (modern GNOME HIG, flatpak-friendly)
+- **Frontend:** `penguinwash` CLI with `--scan`, `--clean`, `--preview`
+- **Backend:** async scan with `tokio`, parallel directory traversal
+- **Package managers:** apt, dnf, pacman, zypper, snap, flatpak detection + cleaning
+- **System integration:** `pkexec` for root-required operations
+- **Build:** `cargo build --release`, `.deb` + `.rpm` via GitHub Actions
 
 ---
 
-## 4. Feature Phases
-
-### Phase 1 — Core CLI
-- [ ] Scan categories listed above
-- [ ] Display file sizes and counts per category
-- [ ] `--safe` mode (default): never auto-select large/old files or system-critical paths
-- [ ] `--clean` flag to execute deletion after confirmation
-- [ ] `--json` output for scripting
-
-### Phase 2 — System Integration
-- [ ] Root-required cleaning: `/var/cache`, `/var/log` (use `pkexec` or sudo)
-- [ ] Detect installed package managers automatically
-- [ ] Respect `manjaro-pamac`, `octopi` cache locations
-
-### Phase 3 — Automation
-- [ ] Config file: `~/.config/penguinwash.toml`
-- [ ] Scheduled cleaning via cron/systemd timer
-- [ ] `--watch` daemon mode (lightweight, low-frequency scans)
-
-### Phase 4 — GUI (Optional)
-- [ ] TUI using `ratatui`
-- [ ] GTK/Qt bindings for desktop integration
-
----
-
-## 5. File Categories & Safety Rules
+## 4. Categories & Safety Rules
 
 ```
-CATEGORY          PATH(S)                          SAFE TO AUTO-CLEAN?
-System Junk       /var/cache/*, /var/log/*.log      Partial (old logs only)
-User Cache        ~/.cache/*                       Yes (user-owned)
-Trash             ~/.local/share/Trash              Yes
-Package Caches    /var/cache/apt, /var/cache/dnf   Yes (package cache only)
-                  /var/cache/pacman                Yes
-                  /var/lib/flatpak                  Partial (orphans only)
-                  /var/lib/snap                     Partial (orphans only)
-Large Files       ~/Downloads, ~/Documents          NO (manual selection only)
-Old Logs          /var/log/*.log older than 90d    Partial (configurable)
+CATEGORY              PATH(S)                                   SAFE TO AUTO-CLEAN?
+Snap Revisions        /var/lib/snapd/snaps                      YES (disabled only)
+Flatpak Orphans       /var/lib/flatpak, ~/.local/share/flatpak  YES (unused runtimes)
+Thumbnails            ~/.cache/thumbnails                       YES
+User Cache            ~/.cache/* (pip, npm, conda, go, etc.)     YES
+Package Cache         /var/cache/apt, /var/cache/dnf,          YES
+                       /var/cache/pacman, /var/cache/zypper
+Docker Images         /var/lib/docker                           Partial (unused only)
+Trash                 ~/.local/share/Trash                      YES
+Old Logs              /var/log/*.log (>90 days)                 Partial (configurable)
+System Logs           /var/log/ (kern.log, ufw.log, etc.)      Partial (rotated only)
+Old Kernels           /boot                                     Partial (old versions only)
+Large Files           ~/Downloads, ~/Documents, ~/Desktop       NO (manual select)
+Mail Attachments      ~/.local/share/mail-downloads             YES
+Browser Data          ~/.cache/<browser>                        YES
 ```
 
-**Hardcoded exclusions:**
-- `/etc/` — never touch
-- `/boot/` — never touch
-- `/home/*/.ssh/` — never touch
-- `/var/lib/systemd/` — never touch
+**Hardcoded exclusions (NEVER touch):**
+- `/etc/` — never
+- `/boot/` — never
+- `/home/*/.ssh/` — never
+- `/var/lib/systemd/` — never
+- `/var/lib/docker/containers/` — running containers
+- `/var/lib/dockeroverlay2/` — overlay filesystem
 
 ---
 
-## 6. Directory Structure
+## 5. Directory Structure
 
 ```
 PenguinWash/
 ├── Cargo.toml
 ├── src/
-│   ├── main.rs           # CLI entry, argument parsing
-│   ├── scanner.rs        # Recursive scan + categorization
-│   ├── cleaner.rs        # Deletion logic with safety checks
-│   ├── categories.rs     # Category definitions + Linux paths
-│   ├── packagemgr.rs    # Package manager detection + cleaning
-│   ├── config.rs        # Config file loading
-│   └── output.rs        # JSON/table output formatting
-├── config/
-│   └── penguinwash.toml.example
+│   ├── main.rs              # CLI entry, argument parsing
+│   ├── gui.rs                # GTK4 app window + event loop
+│   ├── scanner.rs            # Recursive scan + categorization
+│   ├── cleaner.rs            # Deletion with safety confirmations
+│   ├── categories.rs         # Category definitions + Linux paths
+│   ├── packagemgr.rs         # Package manager detection + cleaning
+│   ├── docker.rs             # Docker image/volume cleaning
+│   ├── config.rs             # Config file (~/.config/penguinwash.toml)
+│   ├── output.rs             # JSON / human-readable output
+│   └── i18n.rs               # Internationalization (future)
+├── data/
+│   └── io.penguinwash.PenguinWash.desktop.yaml   # XDG desktop entry
+├── po/                        # Translation files (future)
 ├── docs/
 │   └── IMPLEMENTATION_PLAN.md
 ├── README.md
@@ -113,18 +102,68 @@ PenguinWash/
 
 ---
 
-## 7. Build & Release
+## 6. Feature Phases
 
-- **CI:** GitHub Actions — on tag push, build `.deb`, `.rpm`, `.AppImage`
-- **Install methods:**
-  - Binary download from Releases
-  - Homebrew (Linuxbrew) — future
-  - `cargo install penguinwash`
+### Phase 1 — Core + GUI
+- [ ] GTK4 app window: category list, scan button, size per category
+- [ ] Category detail view: file list, individual selection
+- [ ] Scan engine: parallel traversal with progress
+- [ ] Preview → Confirm → Delete flow (like PureMac)
+- [ ] `~/.cache/thumbnails`, `~/.cache/<browser>`, `~/.cache/pip`, `~/.cache/npm`
+- [ ] Snap revision scan (disabled only — never remove current)
+- [ ] Flatpak orphan scan (unused runtimes)
+
+### Phase 2 — System + Package Managers
+- [ ] Root-required scanning via `pkexec` for `/var/cache`, `/var/log`
+- [ ] apt cache clean (`apt clean`)
+- [ ] dnf cache clean (`dnf clean all`)
+- [ ] pacman cache clean (`pacman -Sc`)
+- [ ] Journal vacuum (`journalctl --vacuum-time=90d`)
+- [ ] Docker image + volume cleaning (`docker prune -a`)
+
+### Phase 3 — Large Files + Automation
+- [ ] Large file finder (>100MB, configurable)
+- [ ] Old file finder (>365 days, configurable)
+- [ ] Config file: `~/.config/penguinwash.toml`
+- [ ] Scheduled cleaning via systemd timer (more portable than cron on Arch/Fedora)
+- [ ] `--watch` daemon for background monitoring
+
+### Phase 4 — Polish + Release
+- [ ] i18n (gettext, at least en/FR/DE/ES)
+- [ ] `.deb` + `.rpm` package build via GitHub Actions
+- [ ] Flatpak manifest for native Linux distribution
 
 ---
 
-## 8. openclaw Integration
+## 7. Comparison vs BleachBit / Ubuntu Cleaner
 
-- Repo: `KovaForge/PenguinWash` (private by default, confirm with CEO before public)
-- Cron: code review + build verify on push to `develop`
+| Feature | PenguinWash | BleachBit | Ubuntu Cleaner |
+|---|---|---|---|
+| GUI | GTK4 (modern) | GTK2 (legacy) | GTK3 |
+| Open source | MIT | GPL | GPL |
+| Snap cleaning | YES | NO | NO |
+| Flatpak orphan | YES | Partial | NO |
+| Docker cleaning | YES | NO | NO |
+| Large/old file scan | YES | NO | NO |
+| No telemetry | YES | YES | YES |
+| Scheduled cleaning | YES (systemd timer) | YES (cron) | NO |
+| Rust | YES | NO (Python) | NO (Python) |
+
+---
+
+## 8. Build & Release
+
+- **CI:** GitHub Actions — on tag, build `.deb`, `.rpm`, `.AppImage`
+- **Install methods:**
+  - Binary download from Releases
+  - `cargo install penguinwash`
+  - Flatpak (future)
+  - Homebrew/Linuxbrew (future)
+
+---
+
+## 9. openclaw Integration
+
+- Repo: `KovaForge/PenguinWash` (private)
 - Branching: `KFIP####-short-description` per KFIP convention
+- Cron: code review + cargo build verify on push to `develop`
