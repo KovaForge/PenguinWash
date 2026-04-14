@@ -5,6 +5,8 @@ pub mod cleaner;
 pub mod config;
 pub mod packagemgr;
 pub mod scanner;
+#[cfg(feature = "gui")]
+pub mod gui;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

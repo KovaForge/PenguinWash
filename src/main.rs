@@ -25,6 +25,10 @@ struct Cli {
     /// Output JSON instead of human-readable
     #[arg(long)]
     json: bool,
+
+    /// Launch the graphical user interface
+    #[arg(long)]
+    gui: bool,
 }
 
 #[derive(Subcommand)]
@@ -50,16 +54,9 @@ enum Commands {
         yes: bool,
     },
     /// Print current configuration
-    Config {
-        #[command(subcommand)]
-        action: Option<ConfigAction>,
-    },
-}
-
-#[derive(Subcommand)]
-enum ConfigAction {
-    Show,
-    Reset,
+    ShowConfig,
+    /// Reset configuration to defaults
+    ResetConfig,
 }
 
 fn main() -> Result<()> {
@@ -73,17 +70,32 @@ fn main() -> Result<()> {
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
+    // GUI mode
+    if cli.gui {
+        #[cfg(feature = "gui")]
+        {
+            if let Err(e) = penguinwash_lib::gui::run_gui() {
+                eprintln!("GUI error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        #[cfg(not(feature = "gui"))]
+        {
+            println!("GUI not compiled. Run with `--features gui` to enable.");
+        }
+        return Ok(());
+    }
+
     let config = load_config()?;
 
     // Use blocking tokio runtime
     let rt = tokio::runtime::Runtime::new()?;
     let _guard = rt.enter();
 
-    match cli.command {
+    match &cli.command {
         Some(Commands::Scan { categories }) => {
             info!("Starting scan...");
             let result = rt.block_on(run_scan(&config))?;
-
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -96,24 +108,17 @@ fn main() -> Result<()> {
             }
             info!("Clean command not yet implemented. Use --force when ready.");
         }
-        Some(Commands::Config { action }) => {
-            match action {
-                Some(ConfigAction::Show) => {
-                    println!("{}", toml::to_string_pretty(&config)?);
-                }
-                Some(ConfigAction::Reset) => {
-                    let default = Config::default();
-                    save_config(&default)?;
-                    println!("Config reset to defaults.");
-                }
-                None => {
-                    println!("{}", toml::to_string_pretty(&config)?);
-                }
-            }
+        Some(Commands::ShowConfig) => {
+            println!("{}", toml::to_string_pretty(&config)?);
+        }
+        Some(Commands::ResetConfig) => {
+            let default = Config::default();
+            save_config(&default)?;
+            println!("Config reset to defaults.");
         }
         None => {
             info!("PenguinWash v0.1.0 — Linux system cleaner");
-            info!("Run 'penguinwash scan' to start.");
+            info!("Run 'penguinwash scan' or 'penguinwash --gui' to start.");
             let result = rt.block_on(run_scan(&config))?;
             print_scan_result(&result);
         }
