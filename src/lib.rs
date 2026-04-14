@@ -1,5 +1,6 @@
 //! PenguinWash core library
 
+pub mod android;
 pub mod categories;
 pub mod cleaner;
 pub mod config;

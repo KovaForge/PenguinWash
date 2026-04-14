@@ -2,12 +2,14 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::io::{self, Write};
+use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use penguinwash_lib::config::{load_config, save_config};
 use penguinwash_lib::{
-    run_large_file_scan, run_scan, Config, ScanResult,
+    android, cleaner, run_large_file_scan, run_scan, scanner, Config, ScanResult,
 };
 
 #[derive(Parser)]
@@ -68,6 +70,20 @@ enum Commands {
         #[arg(short, long, num_args = 1..)]
         paths: Vec<String>,
     },
+    /// Relocate Android SDK and emulator data out of /home
+    RelocateAndroid {
+        /// Mounted path to move Android data into
+        #[arg(long)]
+        target_root: Option<PathBuf>,
+
+        /// Actually move directories and create symlinks
+        #[arg(short, long)]
+        force: bool,
+
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -114,10 +130,81 @@ fn main() -> Result<()> {
             }
         }
         Some(Commands::Clean { categories: _, force, yes: _ }) => {
-            if !force {
+            let selected_keys = if let Some(Commands::Clean { categories, .. }) = &cli.command {
+                categories.clone()
+            } else {
+                Vec::new()
+            };
+
+            let selected_categories = if selected_keys.is_empty() {
+                penguinwash_lib::categories::all_category_defs()
+                    .iter()
+                    .filter(|c| c.auto_cleanable)
+                    .collect::<Vec<_>>()
+            } else {
+                penguinwash_lib::categories::all_category_defs()
+                    .iter()
+                    .filter(|c| selected_keys.iter().any(|k| k == c.key))
+                    .collect::<Vec<_>>()
+            };
+
+            if selected_categories.is_empty() {
+                println!("No matching categories to clean.");
+                println!("Tip: run `penguinwash scan --json` to list available category keys.");
+                return Ok(());
+            }
+
+            let mut all_items = Vec::new();
+            for cat in &selected_categories {
+                let scan = rt.block_on(scanner::scan_category(cat, &config))?;
+                all_items.extend(scan.items);
+            }
+
+            if all_items.is_empty() {
+                println!("Nothing to clean in selected categories.");
+                return Ok(());
+            }
+
+            let total_bytes: u64 = all_items.iter().map(|i| i.size).sum();
+            println!(
+                "Selected {} items, estimated reclaimable: {}",
+                all_items.len(),
+                penguinwash_lib::humanize_bytes(total_bytes)
+            );
+
+            if *force {
+                if let Some(Commands::Clean { yes, .. }) = &cli.command {
+                    if !yes {
+                        print!("Proceed with deletion? [y/N]: ");
+                        io::stdout().flush()?;
+                        let mut answer = String::new();
+                        io::stdin().read_line(&mut answer)?;
+                        let answer = answer.trim().to_lowercase();
+                        if answer != "y" && answer != "yes" {
+                            println!("Cancelled.");
+                            return Ok(());
+                        }
+                    }
+                }
+            } else {
                 info!("Dry run mode. Use --force to actually delete.");
             }
-            info!("Clean command not yet implemented. Use --force when ready.");
+
+            let summary = rt.block_on(cleaner::delete_items(&all_items, !force))?;
+            if *force {
+                println!(
+                    "Deleted {} items, freed {} ({} failed)",
+                    summary.deleted,
+                    penguinwash_lib::humanize_bytes(summary.freed_bytes),
+                    summary.failed
+                );
+            } else {
+                println!(
+                    "Dry run complete. {} items would be deleted ({}).",
+                    all_items.len(),
+                    penguinwash_lib::humanize_bytes(total_bytes)
+                );
+            }
         }
         Some(Commands::ShowConfig) => {
             println!("{}", toml::to_string_pretty(&config)?);
@@ -145,6 +232,45 @@ fn main() -> Result<()> {
                 }
                 println!("\n{} files found", files.len());
             }
+        }
+        Some(Commands::RelocateAndroid {
+            target_root,
+            force,
+            yes,
+        }) => {
+            let plan = android::plan_android_relocation(target_root.clone())?;
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&plan)?);
+            } else {
+                println!("{}", android::format_android_relocation_plan(&plan));
+            }
+
+            if !*force {
+                println!();
+                println!("Dry run only. Re-run with `--force` to perform the move.");
+                return Ok(());
+            }
+
+            if !*yes {
+                print!("Proceed with relocation and symlink creation? [y/N]: ");
+                io::stdout().flush()?;
+                let mut answer = String::new();
+                io::stdin().read_line(&mut answer)?;
+                let answer = answer.trim().to_lowercase();
+                if answer != "y" && answer != "yes" {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            let summary = android::execute_android_relocation(&plan)?;
+            println!(
+                "Relocated {} item(s) and freed approximately {} from /home.",
+                summary.relocated_items,
+                penguinwash_lib::humanize_bytes(summary.freed_home_bytes)
+            );
+            println!("Target root: {}", summary.target_root.display());
         }
         None => {
             info!("PenguinWash v0.1.0 — Linux system cleaner");

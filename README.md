@@ -87,6 +87,21 @@ Scan for large files on any Linux machine. Output is sorted by size (largest fir
 13 files found
 ```
 
+### Relocate Android SDK Out Of `/home`
+
+PenguinWash can detect Android SDK and AVD directories that live under your home partition and move them onto another mounted partition while leaving symlinks behind.
+
+```bash
+# Preview the relocation plan and let PenguinWash auto-pick a non-/home mount
+./penguinwash relocate-android
+
+# Preview using a specific mounted partition
+./penguinwash relocate-android --target-root /media/$USER/fedora
+
+# Execute the move and create symlinks back into your home directory
+./penguinwash relocate-android --target-root /media/$USER/fedora --force --yes
+```
+
 ### Configuration
 
 ```bash
